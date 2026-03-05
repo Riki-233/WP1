@@ -1,0 +1,210 @@
+#Assume that all trajectories start at an altitude 35 ft above the airport reference elevation.
+
+import math
+import matplotlib.pyplot as plt
+
+# Constantes (SI)
+g = 9.80665
+FT_TO_M = 0.3048
+
+DT = 1.0
+
+# ISA simple (devuelve rho en kg/m3)
+
+def isa_rho(h_m):
+    T0 = 288.15
+    p0 = 101325.0
+    L = 0.0065
+    R = 287.05
+
+    if h_m < 0:
+        h_m = 0.0
+
+    # troposfera hasta 11 km
+    if h_m <= 11000.0:
+        T = T0 - L * h_m
+        p = p0 * (T / T0) ** (g / (R * L))
+        rho = p / (R * T)
+        return rho
+
+    # por encima (isoterma simple)
+    T11 = T0 - L * 11000.0
+    p11 = p0 * (T11 / T0) ** (g / (R * L))
+    p = p11 * math.exp(-g * (h_m - 11000.0) / (R * T11))
+    rho = p / (R * T11)
+    return rho
+
+
+
+# Datos BADA de la tabla del SoW
+
+AIRCRAFT = {
+    "B767-300ER": {
+        "S": 0.28350e3,
+        "Wmax_t": 0.20410e3,
+        "CD0_to": 0.20700e-01, "CD2_to": 0.48300e-01,
+        "CD0_ic": 0.14000e-01, "CD2_ic": 0.49000e-01,
+        "CD0_clean": 0.17400e-01, "CD2_clean": 0.45900e-01,
+        "CT1": 0.35167e6, "CT2_ft": 0.44673e5, "CT3_1ft2": 0.10129e-09,
+    },
+    "B777-300": {
+        "S": 0.42804e3,
+        "Wmax_t": 0.29930e3,
+        "CD0_to": 0.17500e-01, "CD2_to": 0.52500e-01,
+        "CD0_ic": 0.17300e-01, "CD2_ic": 0.48400e-01,
+        "CD0_clean": 0.15700e-01, "CD2_clean": 0.42000e-01,
+        "CT1": 0.42577e6, "CT2_ft": 0.48987e5, "CT3_1ft2": 0.66146e-10,
+    },
+    "B737": {
+        "S": 0.12465e3,
+        "Wmax_t": 0.70800e2,
+        "CD0_to": 0.33300e-01, "CD2_to": 0.42800e-01,
+        "CD0_ic": 0.27000e-01, "CD2_ic": 0.44100e-01,
+        "CD0_clean": 0.23500e-01, "CD2_clean": 0.44500e-01,
+        "CT1": 0.14573e6, "CT2_ft": 0.55638e5, "CT3_1ft2": 0.14200e-10,
+    },
+    "A320-212": {
+        "S": 0.12260e3,
+        "Wmax_t": 0.77000e2,
+        "CD0_to": 0.39300e-01, "CD2_to": 0.39600e-01,
+        "CD0_ic": 0.24200e-01, "CD2_ic": 0.46900e-01,
+        "CD0_clean": 0.24000e-01, "CD2_clean": 0.37500e-01,
+        "CT1": 0.13605e6, "CT2_ft": 0.52238e5, "CT3_1ft2": 0.26637e-10,
+    },
+    "A319-131": {
+        "S": 0.12260e3,
+        "Wmax_t": 0.70000e2,
+        "CD0_to": 0.44500e-01, "CD2_to": 0.32800e-01,
+        "CD0_ic": 0.28400e-01, "CD2_ic": 0.37600e-01,
+        "CD0_clean": 0.28000e-01, "CD2_clean": 0.31000e-01,
+        "CT1": 0.13900e6, "CT2_ft": 0.58900e5, "CT3_1ft2": 0.57200e-14,
+    },
+}
+
+
+
+def get_drag_params(ac, h_agl_m):
+    if h_agl_m < 1500.0 * FT_TO_M:
+        return ac["CD0_to"], ac["CD2_to"]
+    if h_agl_m < 2000.0 * FT_TO_M:
+        return ac["CD0_ic"], ac["CD2_ic"]
+    return ac["CD0_clean"], ac["CD2_clean"]
+
+
+
+def thrust_max(ac, hp_m):
+    CT2_m = ac["CT2_ft"] * FT_TO_M
+    CT3_1m2 = ac["CT3_1ft2"] / (FT_TO_M ** 2)
+    return ac["CT1"] * (1.0 - (hp_m / CT2_m) + CT3_1m2 * (hp_m ** 2))
+
+
+def speed_max_angle(rho, S, CD0, CD2, W):
+    a = 0.5 * rho * S * CD0
+    b = 2.0 * CD2 * (W ** 2) / (rho * S)
+    return (b / a) ** 0.25
+
+def speed_max_RC(rho, S, CD0, CD2, W, T):
+    a = 0.5 * rho * S * CD0
+    b = 2.0 * CD2 * (W ** 2) / (rho * S)
+    disc = T*T + 12.0*a*b
+    y = (T + math.sqrt(disc)) / (6.0 * a)   # y = V^2
+    if y <= 1e-9:
+        y = 1e-9
+    return math.sqrt(y)
+
+
+
+# 1 FUNCIÓN: calcula una trayectoria
+
+def getCCO(ac_name, mtow_percent, speed_type, t_max_s=4000):
+    ac = AIRCRAFT[ac_name]
+
+    # altura inicial 35 ft AGL (SoW). Tomamos esa como AGL=0
+    h0 = 35.0 * FT_TO_M
+    h = h0
+    x = 0.0
+
+    # masa
+    mass_kg = (ac["Wmax_t"] * 1000.0) * (mtow_percent / 100.0)
+    W = mass_kg * g
+
+    x_list = [x]
+    h_list = [h]
+
+    for _ in range(t_max_s):
+        h_agl = h - h0
+
+        rho = isa_rho(h)
+        CD0, CD2 = get_drag_params(ac, h_agl)
+        T = thrust_max(ac, h)
+
+        # velocidad según el tipo
+        if speed_type == "max_angle":
+            V = speed_max_angle(rho, ac["S"], CD0, CD2, W)
+        else:
+            V = speed_max_RC(rho, ac["S"], CD0, CD2, W, T)
+
+        # aerodinámica
+        q = 0.5 * rho * V * V
+        CL = W / (q * ac["S"])
+        CD = CD0 + CD2 * (CL ** 2)
+        D = q * ac["S"] * CD
+
+        # gamma con small angle pero trig bien:
+        # sin(gamma) = (T - D) / W
+        sin_g = (T - D) / W
+        if sin_g > 0.99:
+            sin_g = 0.99
+        if sin_g < -0.99:
+            sin_g = -0.99
+
+        gamma = math.asin(sin_g)
+
+        # si no sube, paramos
+        if gamma <= 0.0:
+            break
+
+
+        dx = V * math.cos(gamma) * DT
+        dh = V * math.sin(gamma) * DT
+
+        x = x + dx
+        h = h + dh
+
+        x_list.append(x)
+        h_list.append(h)
+
+        # corte por seguridad (si ya estás muy alto)
+        if h > 14000.0:   # 14 km
+            break
+
+    return x_list, h_list
+
+
+
+# MAIN: 20 llamadas sin pedir nada por pantalla + plot
+
+def main():
+    ac_list = ["B767-300ER", "B777-300", "B737", "A320-212", "A319-131"]
+    weights = [100, 80]
+    speeds = ["max_RC", "max_angle"]
+
+    plt.figure()
+
+    for ac in ac_list:
+        for w in weights:
+            for sp in speeds:
+                x, h = getCCO(ac, w, sp)
+                label = ac + " (" + str(w) + "%, " + sp + ")"
+                plt.plot(x, h, label=label)
+
+    plt.xlabel("x (m)")
+    plt.ylabel("h (m)")
+    plt.title("CCO trajectories (dt = 1 s)")
+    plt.grid(True)
+    plt.legend(fontsize=7)
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()
