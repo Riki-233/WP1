@@ -1,160 +1,262 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from dataclasses import dataclass
 
-# ---------------------------------------------------------
-# 1. DADES DELS AVIONS (Taula de la pàgina 5)
-# ---------------------------------------------------------
-# Hem creat un diccionari amb les dades exactes del document [cite: 70-86]
-AIRCRAFT_DATA = {
-    "B767-300ER": {
-        "Wmax": 204.10, "S": 283.50,
-        "CD0_TO": 0.02070, "CD2_TO": 0.04830,
-        "CD0_IC": 0.01400, "CD2_IC": 0.04900,
-        "CD0_CLN": 0.01740, "CD2_CLN": 0.04590,
-        "CT1": 0.35167e6, "CT2": 44673, "CT3": 0.10129e-9
-    },
-    "B777-300": {
-        "Wmax": 299.30, "S": 428.04,
-        "CD0_TO": 0.01750, "CD2_TO": 0.05250,
-        "CD0_IC": 0.01730, "CD2_IC": 0.04840,
-        "CD0_CLN": 0.01570, "CD2_CLN": 0.04200,
-        "CT1": 0.42577e6, "CT2": 48987, "CT3": 0.66146e-10
-    },
-    "B737": {
-        "Wmax": 70.80, "S": 124.65,
-        "CD0_TO": 0.03330, "CD2_TO": 0.04280,
-        "CD0_IC": 0.02700, "CD2_IC": 0.04410,
-        "CD0_CLN": 0.02350, "CD2_CLN": 0.04450,
-        "CT1": 0.14573e6, "CT2": 55638, "CT3": 0.14200e-10
-    },
-    "A320-212": {
-        "Wmax": 77.00, "S": 122.60,
-        "CD0_TO": 0.03930, "CD2_TO": 0.03960,
-        "CD0_IC": 0.02420, "CD2_IC": 0.04690,
-        "CD0_CLN": 0.02400, "CD2_CLN": 0.03750,
-        "CT1": 0.13605e6, "CT2": 52238, "CT3": 0.26637e-10
-    },
-    "A319-131": {
-        "Wmax": 70.00, "S": 122.60,
-        "CD0_TO": 0.04450, "CD2_TO": 0.03280,
-        "CD0_IC": 0.02840, "CD2_IC": 0.03760,
-        "CD0_CLN": 0.02800, "CD2_CLN": 0.03100,
-        "CT1": 0.13900e6, "CT2": 58900, "CT3": 0.57200e-14
-    }
-}
 
-# constants
-G0 = 9.80665
+# ==========================
+# CONSTANTES FÍSICAS
+# ==========================
 FT2M = 0.3048
+G = 9.80665
+R = 287.05287
+GAMMA = 1.4
 
-# ---------------------------------------------------------
-# 2. FUNCIONS AUXILIARS
-# ---------------------------------------------------------
-
-def get_atmosphere(h_m):
-    """ Calcula la densitat de l'aire segons ISA  """
-    rho0 = 1.225
-    T0 = 288.15
-    L = -0.0065
-    R = 287.05
-
-    if h_m < 11000:
-        T = T0 + L * h_m
-        rho = rho0 * (T / T0) ** (-(G0 / (L * R)) - 1)
-    else:  # Estratosfera simplificada
-        T11 = T0 + L * 11000
-        p11 = 22632  # Pa
-        rho = (p11 / (R * T11)) * np.exp(-G0 * (h_m - 11000) / (R * T11))
-    return rho
+X_LIMIT_KM = 350.0
+H_LIMIT_KM = 15.0
 
 
-def getCCO(ac_type, MTOW_percent, speed_type):
-    """
-    Funció principal que genera la trajectòria.
-    Inputs segons el document.
-    """
-    ac = AIRCRAFT_DATA[ac_type]
-    W = (MTOW_percent / 100.0) * ac['Wmax'] * 1000.0 * G0  # Pes en Newtons
+# ==========================
+# MODELO ATMOSFÉRICO ISA
+# ==========================
+class ISAAtmosphere:
 
-    # Inicialització de variables segons [cite: 97]
-    x = 0.0
-    h = 35.0 * FT2M  # Comencem a 35 peus sobre la pista
-    dt = 1.0  # pas de temps d'1 segon
+    def __init__(self):
+        self.T0 = 288.15
+        self.P0 = 101325.0
+        self.L = -0.0065
 
-    x_valors = [x]
-    h_valors = [h]
+    def properties(self, h):
 
-    # Bucle d'integració
-    # Parem quan arribem a 350km de distància [cite: 40]
-    while x < 350000:
-        # 1. Determinar configuració segons altitud [cite: 63]
+        if h <= 11000:
+            T = self.T0 + self.L * h
+            P = self.P0 * (T / self.T0) ** (-G / (self.L * R))
+        else:
+            T11 = self.T0 + self.L * 11000
+            P11 = self.P0 * (T11 / self.T0) ** (-G / (self.L * R))
+            T = T11
+            P = P11 * np.exp(-G * (h - 11000) / (R * T))
+
+        rho = P / (R * T)
+        a = np.sqrt(GAMMA * R * T)
+
+        return {"rho": rho, "a": a, "T": T, "P": P}
+
+
+# ==========================
+# AERONAVE
+# ==========================
+@dataclass(frozen=True)
+class Aircraft:
+
+    name: str
+    mtow_t: float
+    S: float
+    cd_data: dict
+    thrust_coeff: tuple  # (CT1, CT2, CT3)
+
+    def drag_coefficients(self, phase):
+        return self.cd_data[phase]
+
+    def thrust_available(self, altitude):
+
+        CT1, CT2, CT3 = self.thrust_coeff
+        h_ft = altitude / FT2M
+
+        T = CT1 * (1 - h_ft / CT2 + CT3 * h_ft**2)
+
+        return max(T, 0.0)
+
+
+# ==========================
+# DINÁMICA DE ASCENSO
+# ==========================
+class ClimbDynamics:
+
+    def __init__(self, atmosphere):
+        self.atm = atmosphere
+
+    def configuration(self, h):
         h_ft = h / FT2M
         if h_ft < 1500:
-            cd0, cd2 = ac['CD0_TO'], ac['CD2_TO']
+            return "TO"
         elif h_ft < 2000:
-            cd0, cd2 = ac['CD0_IC'], ac['CD2_IC']
+            return "IC"
+        return "CLN"
+
+    def optimal_speed(self, mode, T, W, rho, S, cd0, cd2):
+
+        if mode == "maxRC":
+            disc = T**2 + 12 * cd0 * cd2 * W**2
+            return np.sqrt((T + np.sqrt(disc)) /
+                           (3 * rho * S * cd0))
+
+        if mode == "maxAngle":
+            return np.sqrt(2 * W / (rho * S)) * (cd2 / cd0)**0.25
+
+        raise ValueError("Unknown mode")
+
+    def drag(self, W, V, rho, S, cd0, cd2):
+
+        q = 0.5 * rho * V**2
+        CL = W / (q * S)
+        CD = cd0 + cd2 * CL**2
+
+        return q * S * CD
+
+    def state_derivatives(self, state, aircraft, weight, mode):
+
+        x, h = state
+
+        atm_data = self.atm.properties(h)
+        rho = atm_data["rho"]
+
+        phase = self.configuration(h)
+        cd0, cd2 = aircraft.drag_coefficients(phase)
+
+        thrust = aircraft.thrust_available(h)
+
+        V = self.optimal_speed(mode, thrust, weight,
+                               rho, aircraft.S, cd0, cd2)
+
+        D = self.drag(weight, V, rho, aircraft.S, cd0, cd2)
+
+        excess = thrust - D
+
+        if excess <= 0:
+            gamma = 0.0
         else:
-            cd0, cd2 = ac['CD0_CLN'], ac['CD2_CLN']
+            gamma = np.arcsin(np.clip(excess / weight, 0, 0.25))
 
-        # 2. Atmosfera i Empenta màxima
-        rho = get_atmosphere(h)
-        T_max = ac['CT1'] * (1 - h_ft / ac['CT2'] + ac['CT3'] * h_ft ** 2)
+        dxdt = V * np.cos(gamma)
+        dhdt = V * np.sin(gamma)
 
-        # 3. Velocitats òptimes
-        if speed_type == 'max_RC':
-            # Velocitat que maximitza el ràtio d'ascens
-            V = np.sqrt((T_max + np.sqrt(T_max ** 2 + 12 * cd0 * cd2 * W ** 2)) / (3 * rho * ac['S'] * cd0))
-        else:  # max_angle
-            # Velocitat que maximitza l'angle d'ascens
-            V = np.sqrt((2 * W) / (rho * ac['S']) * np.sqrt(cd2 / cd0))
-
-        # 4. Aerodinàmica: Sustentació (L=W) i Resistència (D) [cite: 62]
-        CL = W / (0.5 * rho * V ** 2 * ac['S'])
-        CD = cd0 + cd2 * CL ** 2
-        D = 0.5 * rho * V ** 2 * ac['S'] * CD
-
-        # 5. Càlcul de l'angle d'ascens (gamma) i moviment
-        gamma = np.arcsin((T_max - D) / W)
-
-        # Actualitzem posició (Euler)
-        x += V * np.cos(gamma) * dt
-        h += V * np.sin(gamma) * dt
-
-        # Guardem punts (limitem a 14km d'altura com al grafic) [cite: 15]
-        if h > 14000: break
-        x_valors.append(x)
-        h_valors.append(h)
-
-    return np.array(x_valors), np.array(h_valors)
+        return np.array([dxdt, dhdt])
 
 
-# ---------------------------------------------------------
-# 3. SCRIPT PRINCIPAL PER GENERAR EL GRÀFIC [cite: 119]
-# ---------------------------------------------------------
+# ==========================
+# INTEGRADOR EXPLÍCITO
+# ==========================
+class ExplicitEulerIntegrator:
+
+    def integrate(self, f, state0, dt, stop_condition):
+
+        state = np.array(state0, dtype=float)
+        trajectory = [state.copy()]
+
+        while not stop_condition(state):
+            derivative = f(state)
+            state = state + dt * derivative
+            trajectory.append(state.copy())
+
+        return np.array(trajectory)
+
+
+# ==========================
+# FLEET
+# ==========================
+FLEET = {
+    "B767-300ER": Aircraft(
+        "B767-300ER", 204.10, 283.50,
+        {"TO": (0.02070, 0.04830),
+         "IC": (0.01400, 0.04900),
+         "CLN": (0.01740, 0.04590)},
+        (0.35167e6, 0.44673e5, 0.10129e-9)
+    ),
+    "B777-300": Aircraft(
+        "B777-300", 299.30, 428.04,
+        {"TO": (0.01750, 0.05250),
+         "IC": (0.01730, 0.04840),
+         "CLN": (0.01570, 0.04200)},
+        (0.42577e6, 0.48987e5, 0.66146e-10)
+    ),
+    "B737": Aircraft(
+        "B737", 70.80, 124.65,
+        {"TO": (0.03330, 0.04280),
+         "IC": (0.02700, 0.04410),
+         "CLN": (0.02350, 0.04450)},
+        (0.14573e6, 0.55638e5, 0.14200e-10)
+    ),
+    "A320-212": Aircraft(
+        "A320-212", 77.00, 122.60,
+        {"TO": (0.03930, 0.03960),
+         "IC": (0.02420, 0.04690),
+         "CLN": (0.02400, 0.03750)},
+        (0.13605e6, 0.52238e5, 0.26637e-10)
+    ),
+    "A319-131": Aircraft(
+        "A319-131", 70.00, 122.60,
+        {"TO": (0.04450, 0.03280),
+         "IC": (0.02840, 0.03760),
+         "CLN": (0.02800, 0.03100)},
+        (0.13900e6, 0.58900e5, 0.57200e-14)
+    ),
+}
+
+
+# ==========================
+# API EXTERNA
+# ==========================
+def getCCO(aircraft_name, MTOW_percent, mode):
+
+    aircraft = FLEET[aircraft_name]
+    weight = MTOW_percent / 100 * aircraft.mtow_t * 1000 * G
+
+    atmosphere = ISAAtmosphere()
+    dynamics = ClimbDynamics(atmosphere)
+    integrator = ExplicitEulerIntegrator()
+
+    state0 = [0.0, 35 * FT2M]
+
+    x_limit = X_LIMIT_KM * 1000
+    h_limit = H_LIMIT_KM * 1000
+
+    def stop_condition(state):
+        x, h = state
+        return (x >= x_limit) or (h >= h_limit)
+
+    trajectory = integrator.integrate(
+        lambda s: dynamics.state_derivatives(
+            s, aircraft, weight, mode),
+        state0,
+        dt=1.0,
+        stop_condition=stop_condition
+    )
+
+    return trajectory[:, 0] / 1000, trajectory[:, 1] / 1000
+
+
+# ==========================
+# MAIN
+# ==========================
 def main():
-    avions = ["B767-300ER", "B777-300", "B737", "A320-212", "A319-131"]
-    casos = [
-        (100, 'max_RC', 'RC'),
-        (80, 'max_RC', 'RC'),
-        (100, 'max_angle', 'angle'),
-        (80, 'max_angle', 'angle')
+
+    aircraft_order = ["B767-300ER", "B777-300",
+                      "B737", "A320-212", "A319-131"]
+
+    scenarios = [
+        (100, "maxRC", "RC"),
+        (80, "maxRC", "RC"),
+        (100, "maxAngle", "angle"),
+        (80, "maxAngle", "angle"),
     ]
 
-    plt.figure(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(10, 6))
 
-    for model in avions:
-        for percent, s_type, label_short in casos:
-            x_m, h_m = getCCO(model, percent, s_type)
-            plt.plot(x_m, h_m, label=f"{model} [{percent}% MTOW, {label_short}]")
+    for ac in aircraft_order:
+        for w, mode, label in scenarios:
+            x, y = getCCO(ac, w, mode)
+            ax.plot(x, y, linewidth=1.8,
+                    label=f"{ac} [{w}% MTOW, {label}]")
 
-    # Configuració del gràfic per a que sembli el del PDF [cite: 15-30]
-    plt.xlabel("x [m]")
-    plt.ylabel("h [m]")
-    plt.title("Simulació de trajectòries d'ascens CCO")
-    plt.xlim(0, 350000)
-    plt.ylim(0, 14000)
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend(fontsize=7, ncol=2, loc='lower right')
+    ax.set_xlabel("Distance from start (km)")
+    ax.set_ylabel("Altitude (km)")
+    ax.set_title("CCO climb trajectories (ISA, max thrust), x_stop=350 km, h_stop=15 km")
+    ax.set_xlim(0, X_LIMIT_KM)
+    ax.set_ylim(0, H_LIMIT_KM)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, ncol=2)
+
+    plt.tight_layout()
     plt.show()
 
 
