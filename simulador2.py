@@ -115,9 +115,7 @@ def getCCO(ac_type, MTOW_percent, speed_type):
 def main():
     avions = ["B767-300ER", "B777-300", "B737", "A320-212", "A319-131"]
     casos = [(100, 'max_RC'), (80, 'max_RC'), (100, 'max_angle'), (80, 'max_angle')]
-
-    # CANVIA AQUESTS VALORS PER LES DISTÀNCIES QUE VOLGUEU (en metres)
-    punts_interes = [66063, 105779, 134600]
+    punts_interes = [66063, 105779, 134600, 107700]
 
     plt.figure(figsize=(14, 8))
 
@@ -145,7 +143,7 @@ def main():
 
             # Mostrem la fila a la terminal
             nom_fila = f"{model} ({percent}%, {s_type})"
-            print(f"{nom_fila:<35} | {altituds_trobades[0]} | {altituds_trobades[1]} | {altituds_trobades[2]}")
+            print(f"{nom_fila:<35} | {altituds_trobades[0]} | {altituds_trobades[1]} | {altituds_trobades[2]} | {altituds_trobades[3]}")
 
     plt.xlabel("Distància horitzontal recorreguda x [m]")
     plt.ylabel("Altitud assolida h [m]")
@@ -156,6 +154,65 @@ def main():
     plt.show()
 
 
+# =========================================================
+# NOVA FUNCIÓ PER TROBAR LA MASSA (Copia això al final)
+# =========================================================
+
+def trobar_percentatge_massa(model_avio, dist_objectiu, alt_objectiu, speed_type='max_RC'):
+    """
+    Cerca per bisecció del percentatge de pes necessari per complir l'objectiu.
+    """
+    low, high = 10.0, 100.0  # El rang de percentatges que provarà
+    percent_optim = 100.0
+
+    # Fem 15 iteracions per trobar el valor exacte
+    for _ in range(15):
+        mid = (low + high) / 2
+        x_m, h_m = getCCO(model_avio, mid, speed_type)
+        h_actual = np.interp(dist_objectiu, x_m, h_m)
+
+        # Si l'avió queda per sota, hem de baixar el pes (reduir percentatge)
+        if h_actual < alt_objectiu:
+            high = mid
+        else:
+            low = mid
+        percent_optim = mid
+
+    return percent_optim
+
+
+# =========================================================
+# BLOC D'EXECUCIÓ (Aquí és on tu canvies les dades)
+# =========================================================
 if __name__ == "__main__":
     main()
 
+    # 1. ESCRIU AQUÍ LES TEVES DADES DE PROVA:
+    avio_triat = "A320-212"  # Nom de l'avio (entre cometes)
+    distancia_punt = 134600  # Distància on vols mesurar (en metres)
+    altitud_voluda = 8100  # Altitud que vols tenir (en metres)
+    config_velocitat = "max_RC"  # O "max_angle"
+
+    # 2. El programa calcula el percentatge:
+    resultat_massa = trobar_percentatge_massa(avio_triat, distancia_punt, altitud_voluda, config_velocitat)
+
+    # 3. Sortida per pantalla (Aquí veuràs el valor!)
+    print("\n" + "=" * 60)
+    print(f" CÀLCUL DE MASSA PER A {avio_triat}")
+    print(f" Objectiu: {altitud_voluda} m d'altura als {distancia_punt} m de distància")
+    print(f" RESULTAT: El percentatge de massa ha de ser: {resultat_massa:.2f} %")
+    print("=" * 60 + "\n")
+
+    # 4. Generació del gràfic per comprovar-ho visualment
+    x_opt, h_opt = getCCO(avio_triat, resultat_massa, config_velocitat)
+    plt.figure(figsize=(10, 5))
+    plt.plot(x_opt, h_opt, 'b-', label=f"Trajectòria amb {resultat_massa:.2f}% MTOW")
+    plt.scatter(distancia_punt, altitud_voluda, color='red', s=100, label="Punt Objectiu", zorder=5)
+    plt.axhline(y=altitud_voluda, color='gray', linestyle='--', alpha=0.3)
+    plt.axvline(x=distancia_punt, color='gray', linestyle='--', alpha=0.3)
+    plt.title(f"Verificació: {avio_triat} arribant a l'objectiu")
+    plt.xlabel("Distància (x) [m]")
+    plt.ylabel("Altitud (h) [m]")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
